@@ -1,0 +1,8 @@
+workflows:
+  run-testsigma:
+    name: Run Testsigma Shell Script
+    scripts:
+      - name: Trigger Testsigma
+        script: |
+          chmod +x ./magictrigger.sh
+          ./magictrigger.sh
