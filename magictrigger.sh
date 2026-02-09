@@ -13,7 +13,7 @@
 TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiIyYzI3NWM0OC1jMzcwLTQ0YjgtOGYxYS05ZmZmYzY0MTI4NmUiLCJkb21haW4iOiJldmllLmNvbS5hdSIsInRlbmFudElkIjo2NjY4OCwiaXNJZGxlVGltZW91dENvbmZpZ3VyZWQiOmZhbHNlfQ.4kzfASEr0Bb4_VQTxTdy41f3cKq14dwwRdJZyS9vQUj9SpMhcHv_D4sE3malkop6RSzDDuS7kZ0SAPMUOCtJYw"
 
 # ✅ Multiple Test Plan IDs
-TESTSIGMA_TEST_PLAN_IDS=" 3160 1985 735b "
+TESTSIGMA_TEST_PLAN_IDS=" 3160 1985 3161"
 
 # Runtime data (optional)
 RUNTIME_DATA_INPUT="url=https://the-internet.herokuapp.com/login,test=1221"
