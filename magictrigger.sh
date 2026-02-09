@@ -1,18 +1,19 @@
 #!/bin/bash
 #**********************************************************************
-# Multi Testsigma Test Plan Trigger Script (PARALLEL)
-# - Triggers multiple test plans at once
-# - Polls all until completion
+# Multi Testsigma Test Plan Trigger Script
+# - Triggers multiple test plans one by one
+# - Waits until each completes
 # - Downloads separate JUnit reports per plan
 # - Continues even if one fails
+# - Shows PASS/FAIL per test plan
 # - Final exit code = FAIL if any plan failed
 #**********************************************************************
 
 #********START USER_INPUTS*********
 TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiIyYzI3NWM0OC1jMzcwLTQ0YjgtOGYxYS05ZmZmYzY0MTI4NmUiLCJkb21haW4iOiJldmllLmNvbS5hdSIsInRlbmFudElkIjo2NjY4OCwiaXNJZGxlVGltZW91dENvbmZpZ3VyZWQiOmZhbHNlfQ.4kzfASEr0Bb4_VQTxTdy41f3cKq14dwwRdJZyS9vQUj9SpMhcHv_D4sE3malkop6RSzDDuS7kZ0SAPMUOCtJYw"
 
-# ✅ Multiple Test Plan IDs (space separated)
-TESTSIGMA_TEST_PLAN_IDS="3160 1985 735"
+# ✅ Multiple Test Plan IDs
+TESTSIGMA_TEST_PLAN_IDS=" 3160 1985 735b "
 
 # Runtime data (optional)
 RUNTIME_DATA_INPUT="url=https://the-internet.herokuapp.com/login,test=1221"
@@ -20,9 +21,10 @@ RUNTIME_DATA_INPUT="url=https://the-internet.herokuapp.com/login,test=1221"
 # Build number
 BUILD_NO=$(date +"%Y%m%d%H%M")
 
-# Poll interval seconds
+# Poll wait time
 SLEEP_TIME=10
 #********END USER_INPUTS***********
+
 
 #********GLOBAL variables**********
 TESTSIGMA_TEST_PLAN_REST_URL="https://app.testsigma.com/api/v1/execution_results"
@@ -42,7 +44,7 @@ populateRuntimeData() {
 
   IFS=',' read -r -a VARIABLES <<< "$RUNTIME_DATA_INPUT"
   RUN_TIME_DATA='"runtimeData":{'
-  DATA_VALUES=""
+  DATA_VALUES=
 
   for element in "${VARIABLES[@]}"
   do
@@ -55,7 +57,7 @@ populateRuntimeData() {
   RUN_TIME_DATA=$RUN_TIME_DATA$DATA_VALUES"}"
 }
 
-populateBuildNo() {
+populateBuildNo(){
   if [ -z "$BUILD_NO" ]; then
     BUILD_DATA=""
   else
@@ -63,7 +65,7 @@ populateBuildNo() {
   fi
 }
 
-populateJsonPayload() {
+populateJsonPayload(){
   JSON_DATA='{"executionId":'$TEST_PLAN_ID
   populateRuntimeData
   populateBuildNo
@@ -79,9 +81,7 @@ populateJsonPayload() {
   fi
 }
 
-get_status() {
-  local RUN_ID=$1
-
+get_status(){
   RUN_RESPONSE=$(curl -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
     --silent --write-out "HTTPSTATUS:%{http_code}" \
     -X GET $TESTSIGMA_TEST_PLAN_REST_URL/$RUN_ID)
@@ -91,10 +91,29 @@ get_status() {
   EXECUTION_RESULT=$(echo $RUN_BODY | getJsonValue result)
 }
 
-saveJUnitReport() {
-  local TEST_PLAN_ID=$1
-  local RUN_ID=$2
+checkTestPlanRunStatus(){
+  while true
+  do
+    get_status
+    echo "Execution Status:: $EXECUTION_STATUS"
 
+    if [[ $EXECUTION_STATUS =~ "STATUS_IN_PROGRESS" ]]; then
+      sleep $SLEEP_TIME
+
+    elif [[ $EXECUTION_STATUS =~ "STATUS_CREATED" ]]; then
+      sleep $SLEEP_TIME
+
+    elif [[ $EXECUTION_STATUS =~ "STATUS_COMPLETED" ]]; then
+      break
+
+    else
+      echo "Unexpected Execution status: $EXECUTION_STATUS"
+      sleep $SLEEP_TIME
+    fi
+  done
+}
+
+saveJUnitReport(){
   REPORT_FILE="./junit-report-testplan-${TEST_PLAN_ID}.xml"
 
   curl --silent -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
@@ -106,10 +125,7 @@ saveJUnitReport() {
   echo "Saved JUnit report: $REPORT_FILE"
 }
 
-saveJsonResponse() {
-  local TEST_PLAN_ID=$1
-  local RUN_BODY=$2
-
+saveJsonResponse(){
   JSON_FILE="./testsigma-response-testplan-${TEST_PLAN_ID}.json"
   echo "$RUN_BODY" > $JSON_FILE
   echo "Saved JSON response: $JSON_FILE"
@@ -117,18 +133,13 @@ saveJsonResponse() {
 
 #******************************************************
 
-echo "************ Testsigma: Start executing multiple Test Plans (PARALLEL) ************"
-
-declare -A RUN_IDS
-declare -A PLAN_STATUS
-declare -A PLAN_RESULT
+echo "************ Testsigma: Start executing multiple Test Plans ************"
 
 FINAL_EXIT_CODE=0
+
+# Store results
 SUMMARY_RESULTS=""
 
-# ======================================================
-# 1) Trigger ALL test plans first
-# ======================================================
 for TEST_PLAN_ID in $TESTSIGMA_TEST_PLAN_IDS
 do
   echo ""
@@ -142,91 +153,41 @@ do
     -H "Accept: application/json" \
     -H "content-type:application/json" \
     --silent --write-out "HTTPSTATUS:%{http_code}" \
-    -d "$JSON_DATA" -X POST $TESTSIGMA_TEST_PLAN_REST_URL)
+    -d "$JSON_DATA" -X POST $TESTSIGMA_TEST_PLAN_REST_URL )
 
   RUN_ID=$(echo $HTTP_RESPONSE | getJsonValue id)
   HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
 
-  if [ ! "$HTTP_STATUS" -eq 200 ]; then
-    echo "❌ Failed to start execution for Test Plan ID: $TEST_PLAN_ID"
-    PLAN_STATUS[$TEST_PLAN_ID]="TRIGGER_FAILED"
-    PLAN_RESULT[$TEST_PLAN_ID]="FAIL"
+  if [ ! $HTTP_STATUS -eq 200 ]; then
+    echo "❌ Failed to start Test Plan execution for Test Plan ID: $TEST_PLAN_ID"
+    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => FAIL (Trigger Failed)"
     FINAL_EXIT_CODE=1
     continue
   fi
 
-  echo "✅ Started Run ID: $RUN_ID"
-  RUN_IDS[$TEST_PLAN_ID]=$RUN_ID
-  PLAN_STATUS[$TEST_PLAN_ID]="RUNNING"
-done
+  echo "✅ Run ID: $RUN_ID"
+  echo "Waiting until execution completes..."
 
-# ======================================================
-# 2) Poll all runs until all are completed
-# ======================================================
-echo ""
-echo "================== WAITING FOR ALL TEST PLANS =================="
+  checkTestPlanRunStatus
 
-ALL_DONE=0
+  saveJUnitReport
+  saveJsonResponse
 
-while [ $ALL_DONE -eq 0 ]
-do
-  ALL_DONE=1
-
-  for TEST_PLAN_ID in "${!RUN_IDS[@]}"
-  do
-    RUN_ID=${RUN_IDS[$TEST_PLAN_ID]}
-
-    # Skip completed ones
-    if [[ "${PLAN_STATUS[$TEST_PLAN_ID]}" == "COMPLETED" ]]; then
-      continue
-    fi
-
-    get_status $RUN_ID
-
-    echo "Test Plan $TEST_PLAN_ID | Run $RUN_ID | Status: $EXECUTION_STATUS"
-
-    if [[ "$EXECUTION_STATUS" == "STATUS_COMPLETED" ]]; then
-      PLAN_STATUS[$TEST_PLAN_ID]="COMPLETED"
-      PLAN_RESULT[$TEST_PLAN_ID]="$EXECUTION_RESULT"
-
-      # Save reports
-      saveJUnitReport $TEST_PLAN_ID $RUN_ID
-      saveJsonResponse $TEST_PLAN_ID "$RUN_BODY"
-
-    else
-      ALL_DONE=0
-    fi
-  done
-
-  if [ $ALL_DONE -eq 0 ]; then
-    echo "------------------------------------------------------"
-    echo "Some test plans still running... Waiting $SLEEP_TIME sec"
-    echo "------------------------------------------------------"
-    sleep $SLEEP_TIME
+  # PASS/FAIL based on result
+  if [[ $EXECUTION_RESULT =~ "SUCCESS" ]]; then
+    echo "✅ Test Plan $TEST_PLAN_ID Result: PASS"
+    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => PASS"
+  else
+    echo "❌ Test Plan $TEST_PLAN_ID Result: FAIL"
+    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => FAIL"
+    FINAL_EXIT_CODE=1
   fi
+
 done
 
-# ======================================================
-# 3) Final summary
-# ======================================================
 echo ""
 echo "==================== FINAL SUMMARY ===================="
-
-for TEST_PLAN_ID in $TESTSIGMA_TEST_PLAN_IDS
-do
-  if [[ "${PLAN_STATUS[$TEST_PLAN_ID]}" == "TRIGGER_FAILED" ]]; then
-    echo "❌ Test Plan $TEST_PLAN_ID => FAIL (Trigger Failed)"
-    FINAL_EXIT_CODE=1
-
-  elif [[ "${PLAN_RESULT[$TEST_PLAN_ID]}" == "SUCCESS" ]]; then
-    echo "✅ Test Plan $TEST_PLAN_ID => PASS"
-
-  else
-    echo "❌ Test Plan $TEST_PLAN_ID => FAIL"
-    FINAL_EXIT_CODE=1
-  fi
-done
-
+echo -e "$SUMMARY_RESULTS"
 echo "======================================================="
 
 if [ $FINAL_EXIT_CODE -eq 0 ]; then
