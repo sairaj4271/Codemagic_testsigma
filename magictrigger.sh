@@ -9,7 +9,7 @@
 #**********************************************************************
 
 #********START USER_INPUTS*********
-TESTSIGMA_API_KEY="YOUR_API_KEY_HERE"
+TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiIyYzI3NWM0OC1jMzcwLTQ0YjgtOGYxYS05ZmZmYzY0MTI4NmUiLCJkb21haW4iOiJldmllLmNvbS5hdSIsInRlbmFudElkIjo2NjY4OCwiaXNJZGxlVGltZW91dENvbmZpZ3VyZWQiOmZhbHNlfQ.4kzfASEr0Bb4_VQTxTdy41f3cKq14dwwRdJZyS9vQUj9SpMhcHv_D4sE3malkop6RSzDDuS7kZ0SAPMUOCtJYw"
 
 # ✅ Multiple Test Plan IDs (space separated)
 TESTSIGMA_TEST_PLAN_IDS="3160 1985 735"
