@@ -4,8 +4,9 @@
 # - Triggers multiple test plans one by one
 # - Waits until each completes
 # - Downloads separate JUnit reports per plan
+# - Extracts testcase counts from JUnit XML (REAL COUNTS)
 # - Continues even if one fails
-# - Shows PASS/FAIL + Counts per test plan
+# - Shows PASS/FAIL per test plan
 # - Final exit code = FAIL if any plan failed
 #**********************************************************************
 
@@ -30,6 +31,9 @@ SLEEP_TIME=10
 TESTSIGMA_TEST_PLAN_REST_URL="https://app.testsigma.com/api/v1/execution_results"
 TESTSIGMA_JUNIT_REPORT_URL="https://app.testsigma.com/api/v1/reports/junit"
 #**********************************
+
+
+# ------------------ Utility Functions ------------------
 
 getJsonValue() {
   json_key=$1
@@ -87,35 +91,8 @@ get_status(){
     -X GET $TESTSIGMA_TEST_PLAN_REST_URL/$RUN_ID)
 
   RUN_BODY=$(echo $RUN_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
-
   EXECUTION_STATUS=$(echo $RUN_BODY | getJsonValue status)
-
-  # Result (use consolidatedResult if result is null)
   EXECUTION_RESULT=$(echo $RUN_BODY | getJsonValue result)
-  CONSOLIDATED_RESULT=$(echo $RUN_BODY | getJsonValue consolidatedResult)
-
-  if [[ -z "$EXECUTION_RESULT" || "$EXECUTION_RESULT" == "null" ]]; then
-    EXECUTION_RESULT=$CONSOLIDATED_RESULT
-  fi
-
-  # Counts (try normal first, then consolidated)
-  TOTAL_COUNT=$(echo $RUN_BODY | getJsonValue totalCount)
-  PASSED_COUNT=$(echo $RUN_BODY | getJsonValue passedCount)
-  FAILED_COUNT=$(echo $RUN_BODY | getJsonValue failedCount)
-  STOPPED_COUNT=$(echo $RUN_BODY | getJsonValue stoppedCount)
-  NOT_EXECUTED_COUNT=$(echo $RUN_BODY | getJsonValue notExecutedCount)
-
-  CONS_TOTAL=$(echo $RUN_BODY | getJsonValue consolidatedPlanTotalCount)
-  CONS_PASS=$(echo $RUN_BODY | getJsonValue consolidatedPlanPassedCount)
-  CONS_FAIL=$(echo $RUN_BODY | getJsonValue consolidatedPlanFailedCount)
-  CONS_STOP=$(echo $RUN_BODY | getJsonValue consolidatedPlanStoppedCount)
-  CONS_NOTEXEC=$(echo $RUN_BODY | getJsonValue consolidatedPlanNotExecutedCount)
-
-  if [[ "$TOTAL_COUNT" == "null" || -z "$TOTAL_COUNT" ]]; then TOTAL_COUNT=$CONS_TOTAL; fi
-  if [[ "$PASSED_COUNT" == "null" || -z "$PASSED_COUNT" ]]; then PASSED_COUNT=$CONS_PASS; fi
-  if [[ "$FAILED_COUNT" == "null" || -z "$FAILED_COUNT" ]]; then FAILED_COUNT=$CONS_FAIL; fi
-  if [[ "$STOPPED_COUNT" == "null" || -z "$STOPPED_COUNT" ]]; then STOPPED_COUNT=$CONS_STOP; fi
-  if [[ "$NOT_EXECUTED_COUNT" == "null" || -z "$NOT_EXECUTED_COUNT" ]]; then NOT_EXECUTED_COUNT=$CONS_NOTEXEC; fi
 }
 
 checkTestPlanRunStatus(){
@@ -155,24 +132,44 @@ saveJsonResponse(){
   echo "Saved JSON response: $JSON_FILE"
 }
 
-printRow(){
-  printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" \
-    "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+# ✅ Extract counts from JUnit XML
+extractCountsFromJUnit(){
+  REPORT_FILE="./junit-report-testplan-${TEST_PLAN_ID}.xml"
+
+  if [ ! -f "$REPORT_FILE" ]; then
+    TOTAL="-"
+    FAIL="-"
+    SKIP="-"
+    PASS="-"
+    return
+  fi
+
+  TOTAL=$(grep -oP 'tests="\K[0-9]+' "$REPORT_FILE" | head -1)
+  FAIL=$(grep -oP 'failures="\K[0-9]+' "$REPORT_FILE" | head -1)
+  SKIP=$(grep -oP 'skipped="\K[0-9]+' "$REPORT_FILE" | head -1)
+
+  # If empty set as 0
+  TOTAL=${TOTAL:-0}
+  FAIL=${FAIL:-0}
+  SKIP=${SKIP:-0}
+
+  PASS=$((TOTAL - FAIL - SKIP))
 }
 
-#******************************************************
+# ------------------ MAIN ------------------
 
-echo "************ Testsigma: Start executing multiple Test Plans ************"
 echo ""
-printRow "TESTPLAN" "TOTAL" "PASS" "FAIL" "STOP" "NOT_EXEC" "RESULT"
-printRow "--------" "-----" "----" "----" "----" "--------" "------"
+echo "*********** Testsigma: Start executing multiple Test Plans ************"
 echo ""
+
+printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "TESTPLAN" "TOTAL" "PASS" "FAIL" "SKIP" "NOT_EXEC" "RESULT"
+printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "--------" "-----" "----" "----" "----" "--------" "------"
 
 FINAL_EXIT_CODE=0
-SUMMARY_RESULTS=""
 
 for TEST_PLAN_ID in $TESTSIGMA_TEST_PLAN_IDS
 do
+  echo ""
   echo "========================================================"
   echo "Triggering Test Plan ID: $TEST_PLAN_ID"
   echo "========================================================"
@@ -190,7 +187,7 @@ do
 
   if [ ! $HTTP_STATUS -eq 200 ]; then
     echo "❌ Failed to start Test Plan execution for Test Plan ID: $TEST_PLAN_ID"
-    printRow "$TEST_PLAN_ID" "-" "-" "-" "-" "-" "FAIL"
+    printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "$TEST_PLAN_ID" "-" "-" "-" "-" "-" "FAIL"
     FINAL_EXIT_CODE=1
     continue
   fi
@@ -203,31 +200,27 @@ do
   saveJUnitReport
   saveJsonResponse
 
-  # If still null, replace with "-"
-  if [[ -z "$TOTAL_COUNT" || "$TOTAL_COUNT" == "null" ]]; then TOTAL_COUNT="-"; fi
-  if [[ -z "$PASSED_COUNT" || "$PASSED_COUNT" == "null" ]]; then PASSED_COUNT="-"; fi
-  if [[ -z "$FAILED_COUNT" || "$FAILED_COUNT" == "null" ]]; then FAILED_COUNT="-"; fi
-  if [[ -z "$STOPPED_COUNT" || "$STOPPED_COUNT" == "null" ]]; then STOPPED_COUNT="-"; fi
-  if [[ -z "$NOT_EXECUTED_COUNT" || "$NOT_EXECUTED_COUNT" == "null" ]]; then NOT_EXECUTED_COUNT="-"; fi
+  extractCountsFromJUnit
 
-  # PASS/FAIL logic
+  # Decide PASS/FAIL
   if [[ $EXECUTION_RESULT =~ "SUCCESS" ]]; then
-    RESULT_STATUS="PASS"
+    RESULT_TEXT="PASS"
   else
-    RESULT_STATUS="FAIL"
+    RESULT_TEXT="FAIL"
     FINAL_EXIT_CODE=1
   fi
 
   echo ""
   echo "📌 Test Plan $TEST_PLAN_ID Completed"
-  echo "Total: $TOTAL_COUNT | Passed: $PASSED_COUNT | Failed: $FAILED_COUNT | Stopped: $STOPPED_COUNT | Not Executed: $NOT_EXECUTED_COUNT"
-  echo "Result: $RESULT_STATUS"
-  echo ""
+  echo "Total: $TOTAL | Passed: $PASS | Failed: $FAIL | Skipped: $SKIP"
+  echo "Result: $RESULT_TEXT"
 
-  printRow "$TEST_PLAN_ID" "$TOTAL_COUNT" "$PASSED_COUNT" "$FAILED_COUNT" "$STOPPED_COUNT" "$NOT_EXECUTED_COUNT" "$RESULT_STATUS"
-  echo ""
+  # NOT_EXEC is not available in junit, so show "-"
+  printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "$TEST_PLAN_ID" "$TOTAL" "$PASS" "$FAIL" "$SKIP" "-" "$RESULT_TEXT"
+
 done
 
+echo ""
 echo "======================================================="
 
 if [ $FINAL_EXIT_CODE -eq 0 ]; then
