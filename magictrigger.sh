@@ -1,18 +1,17 @@
 #!/bin/bash
 #**********************************************************************
-# Testsigma Multi Test Plan Execution - FINAL WORKING VERSION
-# - Runs multiple Test Plans one by one
-# - Waits until each completes
-# - Downloads separate JUnit report per plan
-# - Extracts accurate Total/Pass/Fail/Skip from JUnit XML (SUM all testsuites)
-# - Shows clean summary
-# - Final exit code = 1 if any plan failed
+# Testsigma Multi Test Plan Execution - FINAL FIXED VERSION
+# - Runs Test Plans ONE BY ONE
+# - Waits until completion
+# - Downloads JUnit per plan
+# - Extracts REAL testcase counts from JUnit (testcase tags)
+# - Prints clean final summary + pass rate
 #**********************************************************************
 
 #********START USER_INPUTS*********
 TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJmZmRiMWQzMi1lNzQ5LTQzNTctOWZkNy02NmE3MTQ2YmMwMWEiLCJkb21haW4iOiJzeXNsYXRlY2guY29tIiwidGVuYW50SWQiOjU5Mzg0LCJpc0lkbGVUaW1lb3V0Q29uZmlndXJlZCI6ZmFsc2V9.Z7iytzLk_zxQvhbx6_WPqJQCEF9hRF45QqpTxxajWn5x5GVJRV8FWp3xbfPQgJiytghaYEBAyWAW_Y0V4_aCwA"
 
-# Multiple Test Plan IDs
+# Space separated test plan IDs
 TESTSIGMA_TEST_PLAN_IDS="7341 3461 3828"
 
 # Runtime data (optional)
@@ -21,7 +20,7 @@ RUNTIME_DATA_INPUT="url=https://the-internet.herokuapp.com/login,test=1221"
 # Build number
 BUILD_NO=$(date +"%Y%m%d%H%M")
 
-# Poll wait time (seconds)
+# Poll wait time in seconds
 SLEEP_TIME=10
 #********END USER_INPUTS***********
 
@@ -40,6 +39,7 @@ TOTAL_SKIPPED_CASES=0
 
 TOTAL_EXECUTION_TIME=0
 
+FINAL_EXIT_CODE=0
 declare -a PLAN_RESULTS
 #**********************************
 
@@ -107,7 +107,6 @@ get_status(){
     -X GET $TESTSIGMA_TEST_PLAN_REST_URL/$RUN_ID)
 
   RUN_BODY=$(echo $RUN_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
-
   EXECUTION_STATUS=$(getJsonValue "status" "$RUN_BODY")
   EXECUTION_RESULT=$(getJsonValue "result" "$RUN_BODY")
 }
@@ -131,7 +130,7 @@ checkTestPlanRunStatus(){
   done
 }
 
-# ✅ FIXED: Sum ALL <testsuite> values correctly
+# ✅ FINAL FIX: Always count <testcase> tags (Most reliable for Testsigma JUnit)
 extractFromJUnit(){
   local REPORT_FILE=$1
 
@@ -144,32 +143,12 @@ extractFromJUnit(){
     return 1
   fi
 
-  if command -v xmllint &> /dev/null; then
-    JUNIT_TOTAL=$(xmllint --xpath "string(sum(//testsuite/@tests))" "$REPORT_FILE" 2>/dev/null)
-    JUNIT_FAILURES=$(xmllint --xpath "string(sum(//testsuite/@failures))" "$REPORT_FILE" 2>/dev/null)
-    JUNIT_ERRORS=$(xmllint --xpath "string(sum(//testsuite/@errors))" "$REPORT_FILE" 2>/dev/null)
-    JUNIT_SKIPPED=$(xmllint --xpath "string(sum(//testsuite/@skipped))" "$REPORT_FILE" 2>/dev/null)
-  else
-    JUNIT_TOTAL=$(grep -c "<testcase " "$REPORT_FILE" 2>/dev/null || echo "0")
-    JUNIT_FAILURES=$(grep -c "<failure" "$REPORT_FILE" 2>/dev/null || echo "0")
-    JUNIT_ERRORS=$(grep -c "<error" "$REPORT_FILE" 2>/dev/null || echo "0")
-    JUNIT_SKIPPED=$(grep -c "<skipped" "$REPORT_FILE" 2>/dev/null || echo "0")
-  fi
+  TOTAL_COUNT=$(grep -c "<testcase " "$REPORT_FILE" 2>/dev/null || echo "0")
+  FAILED_COUNT=$(grep -c "<failure" "$REPORT_FILE" 2>/dev/null || echo "0")
+  ERROR_COUNT=$(grep -c "<error" "$REPORT_FILE" 2>/dev/null || echo "0")
+  SKIPPED_COUNT=$(grep -c "<skipped" "$REPORT_FILE" 2>/dev/null || echo "0")
 
-  # Remove decimals like 4.0
-  JUNIT_TOTAL=${JUNIT_TOTAL%.*}
-  JUNIT_FAILURES=${JUNIT_FAILURES%.*}
-  JUNIT_ERRORS=${JUNIT_ERRORS%.*}
-  JUNIT_SKIPPED=${JUNIT_SKIPPED%.*}
-
-  JUNIT_TOTAL=${JUNIT_TOTAL:-0}
-  JUNIT_FAILURES=${JUNIT_FAILURES:-0}
-  JUNIT_ERRORS=${JUNIT_ERRORS:-0}
-  JUNIT_SKIPPED=${JUNIT_SKIPPED:-0}
-
-  TOTAL_COUNT=$JUNIT_TOTAL
-  FAILED_COUNT=$((JUNIT_FAILURES + JUNIT_ERRORS))
-  SKIPPED_COUNT=$JUNIT_SKIPPED
+  FAILED_COUNT=$((FAILED_COUNT + ERROR_COUNT))
   PASSED_COUNT=$((TOTAL_COUNT - FAILED_COUNT - SKIPPED_COUNT))
 
   if [ $PASSED_COUNT -lt 0 ]; then
@@ -195,14 +174,15 @@ extractTestCaseStatistics() {
   TOTAL_COUNT=0
   DURATION_SEC=0
 
+  # Duration from API (ms)
   DURATION=$(getJsonValue "duration" "$RUN_BODY")
   DURATION=$(echo "$DURATION" | tr -dc '0-9')
   DURATION=${DURATION:-0}
   DURATION_SEC=$((DURATION / 1000))
 
   REPORT_FILE="./junit-report-testplan-${TEST_PLAN_ID}.xml"
-  echo "   📥 Downloading JUnit report..."
 
+  echo "   📥 Downloading JUnit report..."
   curl --silent -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
     -H "Accept: application/xml" \
     -H "content-type:application/json" \
@@ -212,19 +192,7 @@ extractTestCaseStatistics() {
   if extractFromJUnit "$REPORT_FILE"; then
     echo "   ✓ Statistics extracted from JUnit XML"
   else
-    echo "   ⚠️ Could not extract stats from JUnit. Using API counts..."
-    PASSED_COUNT=$(getJsonValue "passedCount" "$RUN_BODY")
-    FAILED_COUNT=$(getJsonValue "failedCount" "$RUN_BODY")
-    TOTAL_COUNT=$(getJsonValue "totalCount" "$RUN_BODY")
-
-    PASSED_COUNT=$(echo "$PASSED_COUNT" | tr -dc '0-9')
-    FAILED_COUNT=$(echo "$FAILED_COUNT" | tr -dc '0-9')
-    TOTAL_COUNT=$(echo "$TOTAL_COUNT" | tr -dc '0-9')
-
-    PASSED_COUNT=${PASSED_COUNT:-0}
-    FAILED_COUNT=${FAILED_COUNT:-0}
-    TOTAL_COUNT=${TOTAL_COUNT:-0}
-    SKIPPED_COUNT=0
+    echo "   ⚠️ Could not extract from JUnit"
   fi
 
   echo ""
@@ -236,9 +204,11 @@ extractTestCaseStatistics() {
 
   if [ $TOTAL_COUNT -gt 0 ]; then
     PASS_RATE=$((PASSED_COUNT * 100 / TOTAL_COUNT))
-    echo "   📈 Rate:   ${PASS_RATE}%"
+  else
+    PASS_RATE=0
   fi
 
+  echo "   📈 Rate:   ${PASS_RATE}%"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
@@ -269,18 +239,17 @@ echo "Build: $BUILD_NO"
 echo "Plans: $TESTSIGMA_TEST_PLAN_IDS"
 echo ""
 
-FINAL_EXIT_CODE=0
 PLAN_INDEX=0
-
-TOTAL_TEST_PLANS=$(echo "$TESTSIGMA_TEST_PLAN_IDS" | wc -w | tr -d ' ')
+TOTAL_PLANS_COUNT=$(echo "$TESTSIGMA_TEST_PLAN_IDS" | wc -w | tr -d ' ')
 
 for TEST_PLAN_ID in $TESTSIGMA_TEST_PLAN_IDS
 do
+  TOTAL_TEST_PLANS=$((TOTAL_TEST_PLANS + 1))
   PLAN_INDEX=$((PLAN_INDEX + 1))
 
   echo ""
   echo "════════════════════════════════════════════════════════════════"
-  echo "Test Plan $PLAN_INDEX/$TOTAL_TEST_PLANS - ID: $TEST_PLAN_ID"
+  echo "Test Plan $PLAN_INDEX/$TOTAL_PLANS_COUNT - ID: $TEST_PLAN_ID"
   echo "════════════════════════════════════════════════════════════════"
 
   populateJsonPayload
@@ -298,9 +267,9 @@ do
   RUN_ID=$(getJsonValue "id" "$HTTP_BODY")
 
   if [ "$HTTP_STATUS" != "200" ]; then
-    echo "❌ Failed to start (HTTP $HTTP_STATUS)"
-    echo "HTTP BODY: $HTTP_BODY"
-
+    echo "❌ Failed to start execution for Test Plan ID: $TEST_PLAN_ID"
+    echo "HTTP STATUS: $HTTP_STATUS"
+    echo "HTTP BODY  : $HTTP_BODY"
     PLAN_RESULTS[$PLAN_INDEX]="Plan $TEST_PLAN_ID | ❌ FAILED | Trigger Failed"
     TOTAL_FAILED_PLANS=$((TOTAL_FAILED_PLANS + 1))
     FINAL_EXIT_CODE=1
