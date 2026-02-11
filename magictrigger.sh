@@ -4,9 +4,8 @@
 # - Triggers multiple test plans one by one
 # - Waits until each completes
 # - Downloads separate JUnit reports per plan
-# - Extracts testcase counts from JUnit XML (REAL COUNTS)
 # - Continues even if one fails
-# - Shows PASS/FAIL per test plan
+# - Shows PASS/FAIL per test plan in summary table
 # - Final exit code = FAIL if any plan failed
 #**********************************************************************
 
@@ -14,26 +13,23 @@
 TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJmZmRiMWQzMi1lNzQ5LTQzNTctOWZkNy02NmE3MTQ2YmMwMWEiLCJkb21haW4iOiJzeXNsYXRlY2guY29tIiwidGVuYW50SWQiOjU5Mzg0LCJpc0lkbGVUaW1lb3V0Q29uZmlndXJlZCI6ZmFsc2V9.Z7iytzLk_zxQvhbx6_WPqJQCEF9hRF45QqpTxxajWn5x5GVJRV8FWp3xbfPQgJiytghaYEBAyWAW_Y0V4_aCwA"
 
 # ✅ Multiple Test Plan IDs (space separated)
-TESTSIGMA_TEST_PLAN_IDS="7341 3828 3519"
+TESTSIGMA_TEST_PLAN_IDS="7439 4372 3519"
 
-# Runtime data (optional)
+MAX_WAIT_TIME_FOR_SCRIPT_TO_EXIT=180   # in minutes
 RUNTIME_DATA_INPUT="url=https://the-internet.herokuapp.com/login,test=1221"
-
-# Build number
 BUILD_NO=$(date +"%Y%m%d%H%M")
-
-# Poll wait time
-SLEEP_TIME=10
 #********END USER_INPUTS***********
 
 
 #********GLOBAL variables**********
+POLL_COUNT=60
+SLEEP_TIME=$(((MAX_WAIT_TIME_FOR_SCRIPT_TO_EXIT*60)/$POLL_COUNT))
+
 TESTSIGMA_TEST_PLAN_REST_URL="https://app.testsigma.com/api/v1/execution_results"
 TESTSIGMA_JUNIT_REPORT_URL="https://app.testsigma.com/api/v1/reports/junit"
+
+FINAL_EXIT_CODE=0
 #**********************************
-
-
-# ------------------ Utility Functions ------------------
 
 getJsonValue() {
   json_key=$1
@@ -65,7 +61,7 @@ populateBuildNo(){
   if [ -z "$BUILD_NO" ]; then
     BUILD_DATA=""
   else
-    BUILD_DATA='"buildNo":'$BUILD_NO
+    BUILD_DATA='"buildNo":"'$BUILD_NO'"'
   fi
 }
 
@@ -93,20 +89,49 @@ get_status(){
   RUN_BODY=$(echo $RUN_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
   EXECUTION_STATUS=$(echo $RUN_BODY | getJsonValue status)
   EXECUTION_RESULT=$(echo $RUN_BODY | getJsonValue result)
+
+  # These sometimes come as null in API
+  TOTAL_COUNT=$(echo $RUN_BODY | getJsonValue totalCount)
+  PASSED_COUNT=$(echo $RUN_BODY | getJsonValue passedCount)
+  FAILED_COUNT=$(echo $RUN_BODY | getJsonValue failedCount)
+  STOPPED_COUNT=$(echo $RUN_BODY | getJsonValue stoppedCount)
+  NOT_EXECUTED_COUNT=$(echo $RUN_BODY | getJsonValue notExecutedCount)
+
+  # If null, show "-"
+  [ -z "$TOTAL_COUNT" ] && TOTAL_COUNT="-"
+  [ "$TOTAL_COUNT" = "null" ] && TOTAL_COUNT="-"
+
+  [ -z "$PASSED_COUNT" ] && PASSED_COUNT="-"
+  [ "$PASSED_COUNT" = "null" ] && PASSED_COUNT="-"
+
+  [ -z "$FAILED_COUNT" ] && FAILED_COUNT="-"
+  [ "$FAILED_COUNT" = "null" ] && FAILED_COUNT="-"
+
+  [ -z "$STOPPED_COUNT" ] && STOPPED_COUNT="-"
+  [ "$STOPPED_COUNT" = "null" ] && STOPPED_COUNT="-"
+
+  [ -z "$NOT_EXECUTED_COUNT" ] && NOT_EXECUTED_COUNT="-"
+  [ "$NOT_EXECUTED_COUNT" = "null" ] && NOT_EXECUTED_COUNT="-"
 }
 
 checkTestPlanRunStatus(){
-  while true
+  IS_TEST_RUN_COMPLETED=0
+
+  for ((i=0;i<=POLL_COUNT;i++))
   do
     get_status
     echo "Execution Status:: $EXECUTION_STATUS"
 
     if [[ $EXECUTION_STATUS =~ "STATUS_IN_PROGRESS" ]]; then
       sleep $SLEEP_TIME
+
     elif [[ $EXECUTION_STATUS =~ "STATUS_CREATED" ]]; then
       sleep $SLEEP_TIME
+
     elif [[ $EXECUTION_STATUS =~ "STATUS_COMPLETED" ]]; then
+      IS_TEST_RUN_COMPLETED=1
       break
+
     else
       echo "Unexpected Execution status: $EXECUTION_STATUS"
       sleep $SLEEP_TIME
@@ -115,6 +140,11 @@ checkTestPlanRunStatus(){
 }
 
 saveJUnitReport(){
+  if [ $IS_TEST_RUN_COMPLETED -eq 0 ]; then
+    echo "❌ Timeout waiting for completion for Test Plan $TEST_PLAN_ID"
+    return
+  fi
+
   REPORT_FILE="./junit-report-testplan-${TEST_PLAN_ID}.xml"
 
   curl --silent -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
@@ -132,44 +162,21 @@ saveJsonResponse(){
   echo "Saved JSON response: $JSON_FILE"
 }
 
-# ✅ Extract counts from JUnit XML
-extractCountsFromJUnit(){
-  REPORT_FILE="./junit-report-testplan-${TEST_PLAN_ID}.xml"
-
-  if [ ! -f "$REPORT_FILE" ]; then
-    TOTAL="-"
-    FAIL="-"
-    SKIP="-"
-    PASS="-"
-    return
-  fi
-
-  TOTAL=$(grep -oP 'tests="\K[0-9]+' "$REPORT_FILE" | head -1)
-  FAIL=$(grep -oP 'failures="\K[0-9]+' "$REPORT_FILE" | head -1)
-  SKIP=$(grep -oP 'skipped="\K[0-9]+' "$REPORT_FILE" | head -1)
-
-  # If empty set as 0
-  TOTAL=${TOTAL:-0}
-  FAIL=${FAIL:-0}
-  SKIP=${SKIP:-0}
-
-  PASS=$((TOTAL - FAIL - SKIP))
+printRow(){
+  printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" \
+    "$TEST_PLAN_ID" "$TOTAL_COUNT" "$PASSED_COUNT" "$FAILED_COUNT" "$STOPPED_COUNT" "$NOT_EXECUTED_COUNT" "$FINAL_RESULT"
 }
 
-# ------------------ MAIN ------------------
+#******************************************************
 
+echo "************ Testsigma: Start executing multiple Test Plans ************"
 echo ""
-echo "*********** Testsigma: Start executing multiple Test Plans ************"
-echo ""
-
-printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "TESTPLAN" "TOTAL" "PASS" "FAIL" "SKIP" "NOT_EXEC" "RESULT"
+printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "TESTPLAN" "TOTAL" "PASS" "FAIL" "STOP" "NOT_EXEC" "RESULT"
 printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "--------" "-----" "----" "----" "----" "--------" "------"
-
-FINAL_EXIT_CODE=0
+echo ""
 
 for TEST_PLAN_ID in $TESTSIGMA_TEST_PLAN_IDS
 do
-  echo ""
   echo "========================================================"
   echo "Triggering Test Plan ID: $TEST_PLAN_ID"
   echo "========================================================"
@@ -186,8 +193,13 @@ do
   HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
 
   if [ ! $HTTP_STATUS -eq 200 ]; then
-    echo "❌ Failed to start Test Plan execution for Test Plan ID: $TEST_PLAN_ID"
-    printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "$TEST_PLAN_ID" "-" "-" "-" "-" "-" "FAIL"
+    FINAL_RESULT="FAIL"
+    TOTAL_COUNT="-"
+    PASSED_COUNT="-"
+    FAILED_COUNT="-"
+    STOPPED_COUNT="-"
+    NOT_EXECUTED_COUNT="-"
+    printRow
     FINAL_EXIT_CODE=1
     continue
   fi
@@ -196,37 +208,27 @@ do
   echo "Waiting until execution completes..."
 
   checkTestPlanRunStatus
-
   saveJUnitReport
   saveJsonResponse
 
-  extractCountsFromJUnit
-
   # Decide PASS/FAIL
   if [[ $EXECUTION_RESULT =~ "SUCCESS" ]]; then
-    RESULT_TEXT="PASS"
+    FINAL_RESULT="PASS"
   else
-    RESULT_TEXT="FAIL"
+    FINAL_RESULT="FAIL"
     FINAL_EXIT_CODE=1
   fi
 
+  printRow
   echo ""
-  echo "📌 Test Plan $TEST_PLAN_ID Completed"
-  echo "Total: $TOTAL | Passed: $PASS | Failed: $FAIL | Skipped: $SKIP"
-  echo "Result: $RESULT_TEXT"
-
-  # NOT_EXEC is not available in junit, so show "-"
-  printf "%-10s %-8s %-8s %-8s %-8s %-12s %-8s\n" "$TEST_PLAN_ID" "$TOTAL" "$PASS" "$FAIL" "$SKIP" "-" "$RESULT_TEXT"
-
 done
 
-echo ""
 echo "======================================================="
-
 if [ $FINAL_EXIT_CODE -eq 0 ]; then
   echo "✅ ALL Test Plans Passed"
 else
   echo "❌ One or more Test Plans Failed"
 fi
+echo "======================================================="
 
 exit $FINAL_EXIT_CODE
