@@ -10,10 +10,10 @@
 #**********************************************************************
 
 #********START USER_INPUTS*********
-TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiI4MTIyYmM3My1kNzE1LTRmYzYtYjhmYy01MjRmN2U4ODhlMGUiLCJkb21haW4iOiJzeXNsYXRlY2guY29tIiwidGVuYW50SWQiOjU5Mzg0LCJpc0lkbGVUaW1lb3V0Q29uZmlndXJlZCI6ZmFsc2V9.b_EFuzJK_iPaZZs6KxCrZOi_X4pX3JUer8Dc8PkGCCUwOnU9oOB940GCvIjyonb_j9O2fuLzAIdmoAXC_MOO7A"
+TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJmZmRiMWQzMi1lNzQ5LTQzNTctOWZkNy02NmE3MTQ2YmMwMWEiLCJkb21haW4iOiJzeXNsYXRlY2guY29tIiwidGVuYW50SWQiOjU5Mzg0LCJpc0lkbGVUaW1lb3V0Q29uZmlndXJlZCI6ZmFsc2V9.Z7iytzLk_zxQvhbx6_WPqJQCEF9hRF45QqpTxxajWn5x5GVJRV8FWp3xbfPQgJiytghaYEBAyWAW_Y0V4_aCwA"
 
 # ✅ Multiple Test Plan IDs
-TESTSIGMA_TEST_PLAN_IDS=" 7439 4372 3519"
+TESTSIGMA_TEST_PLAN_IDS="7439 4372 3519"
 
 # Runtime data (optional)
 RUNTIME_DATA_INPUT="url=https://the-internet.herokuapp.com/login,test=1221"
@@ -61,7 +61,7 @@ populateBuildNo(){
   if [ -z "$BUILD_NO" ]; then
     BUILD_DATA=""
   else
-    BUILD_DATA='"buildNo":'$BUILD_NO
+    BUILD_DATA='"buildNo":"'$BUILD_NO'"'
   fi
 }
 
@@ -149,6 +149,9 @@ do
 
   populateJsonPayload
 
+  echo "DEBUG: JSON Payload: $JSON_DATA"
+  echo "DEBUG: API URL: $TESTSIGMA_TEST_PLAN_REST_URL"
+
   HTTP_RESPONSE=$(curl -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
     -H "Accept: application/json" \
     -H "content-type:application/json" \
@@ -157,10 +160,15 @@ do
 
   RUN_ID=$(echo $HTTP_RESPONSE | getJsonValue id)
   HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+  HTTP_BODY=$(echo $HTTP_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
+
+  echo "DEBUG: HTTP Status: $HTTP_STATUS"
+  echo "DEBUG: Response Body: $HTTP_BODY"
 
   if [ ! $HTTP_STATUS -eq 200 ]; then
     echo "❌ Failed to start Test Plan execution for Test Plan ID: $TEST_PLAN_ID"
-    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => FAIL (Trigger Failed)"
+    echo "Error Response: $HTTP_BODY"
+    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => FAIL (Trigger Failed - HTTP $HTTP_STATUS)"
     FINAL_EXIT_CODE=1
     continue
   fi
