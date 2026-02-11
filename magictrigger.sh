@@ -1,16 +1,15 @@
 #!/bin/bash
 #**********************************************************************
-# Enhanced Testsigma Script - JUnit-First Extraction
-# - Extracts statistics from JUnit XML (primary source)
-# - Falls back to API if JUnit unavailable
+# Testsigma Multi Test Plan Execution - FINAL WORKING VERSION
+# - Correctly extracts statistics from JUnit XML
 # - Accurate pass/fail/skip counts
-# - Production ready
+# - Clean summary with all details
 #**********************************************************************
 
 #********START USER_INPUTS*********
 TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJmZmRiMWQzMi1lNzQ5LTQzNTctOWZkNy02NmE3MTQ2YmMwMWEiLCJkb21haW4iOiJzeXNsYXRlY2guY29tIiwidGVuYW50SWQiOjU5Mzg0LCJpc0lkbGVUaW1lb3V0Q29uZmlndXJlZCI6ZmFsc2V9.Z7iytzLk_zxQvhbx6_WPqJQCEF9hRF45QqpTxxajWn5x5GVJRV8FWp3xbfPQgJiytghaYEBAyWAW_Y0V4_aCwA"
 
-# ✅ Multiple Test Plan IDs
+# Multiple Test Plan IDs
 TESTSIGMA_TEST_PLAN_IDS="7341 3461 3828"
 
 # Runtime data (optional)
@@ -21,17 +20,12 @@ BUILD_NO=$(date +"%Y%m%d%H%M")
 
 # Poll wait time
 SLEEP_TIME=10
-
-# Debug mode
-DEBUG_MODE=0
 #********END USER_INPUTS***********
-
 
 #********GLOBAL variables**********
 TESTSIGMA_TEST_PLAN_REST_URL="https://app.testsigma.com/api/v1/execution_results"
 TESTSIGMA_JUNIT_REPORT_URL="https://app.testsigma.com/api/v1/reports/junit"
 
-# Statistics tracking
 TOTAL_TEST_PLANS=0
 TOTAL_PASSED_PLANS=0
 TOTAL_FAILED_PLANS=0
@@ -41,7 +35,6 @@ TOTAL_FAILED_CASES=0
 TOTAL_SKIPPED_CASES=0
 TOTAL_EXECUTION_TIME=0
 
-# Array to store detailed results
 declare -a PLAN_RESULTS
 #**********************************
 
@@ -103,9 +96,6 @@ get_status(){
   RUN_BODY=$(echo $RUN_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
   EXECUTION_STATUS=$(getJsonValue "status" "$RUN_BODY")
   EXECUTION_RESULT=$(getJsonValue "result" "$RUN_BODY")
-  if [ $DEBUG_MODE -eq 1 ]; then
-    echo "DEBUG - Status Response: $RUN_BODY" >> debug.log
-  fi
 }
 
 checkTestPlanRunStatus(){
@@ -120,7 +110,7 @@ checkTestPlanRunStatus(){
     elif [[ $EXECUTION_STATUS =~ "STATUS_COMPLETED" ]]; then
       break
     else
-      echo "Unexpected Execution status: $EXECUTION_STATUS"
+      echo "Unexpected status: $EXECUTION_STATUS"
       sleep $SLEEP_TIME
     fi
   done
@@ -133,21 +123,21 @@ extractFromJUnit(){
     return 1
   fi
   
-  # Try xmllint first
+  # Use xmllint if available (most accurate)
   if command -v xmllint &> /dev/null; then
     JUNIT_TOTAL=$(xmllint --xpath "string(//testsuite/@tests)" "$REPORT_FILE" 2>/dev/null)
     JUNIT_FAILURES=$(xmllint --xpath "string(//testsuite/@failures)" "$REPORT_FILE" 2>/dev/null)
     JUNIT_ERRORS=$(xmllint --xpath "string(//testsuite/@errors)" "$REPORT_FILE" 2>/dev/null)
     JUNIT_SKIPPED=$(xmllint --xpath "string(//testsuite/@skipped)" "$REPORT_FILE" 2>/dev/null)
   else
-    # Fallback to grep
-    JUNIT_TOTAL=$(grep -c "<testcase" "$REPORT_FILE" 2>/dev/null || echo "0")
+    # Fallback: count testcase tags
+    JUNIT_TOTAL=$(grep -c "<testcase " "$REPORT_FILE" 2>/dev/null || echo "0")
     JUNIT_FAILURES=$(grep -c "<failure" "$REPORT_FILE" 2>/dev/null || echo "0")
     JUNIT_ERRORS=$(grep -c "<error" "$REPORT_FILE" 2>/dev/null || echo "0")
     JUNIT_SKIPPED=$(grep -c "<skipped" "$REPORT_FILE" 2>/dev/null || echo "0")
   fi
   
-  # Clean values
+  # Clean and default to 0
   JUNIT_TOTAL=$(echo "$JUNIT_TOTAL" | tr -dc '0-9')
   JUNIT_FAILURES=$(echo "$JUNIT_FAILURES" | tr -dc '0-9')
   JUNIT_ERRORS=$(echo "$JUNIT_ERRORS" | tr -dc '0-9')
@@ -162,13 +152,13 @@ extractFromJUnit(){
     return 1
   fi
   
-  # Calculate values
+  # Calculate
   TOTAL_COUNT=$JUNIT_TOTAL
   FAILED_COUNT=$((JUNIT_FAILURES + JUNIT_ERRORS))
   SKIPPED_COUNT=$JUNIT_SKIPPED
   PASSED_COUNT=$((TOTAL_COUNT - FAILED_COUNT - SKIPPED_COUNT))
   
-  # Ensure no negative values
+  # Ensure non-negative
   if [ $PASSED_COUNT -lt 0 ]; then
     PASSED_COUNT=0
   fi
@@ -179,31 +169,24 @@ extractFromJUnit(){
 extractTestCaseStatistics() {
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "📊 Extracting Test Case Statistics for Test Plan $TEST_PLAN_ID"
+  echo "📊 Test Statistics for Plan $TEST_PLAN_ID"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   
-  # Initialize counters
+  # Initialize
   PASSED_COUNT=0
   FAILED_COUNT=0
   SKIPPED_COUNT=0
   TOTAL_COUNT=0
   DURATION=0
   
-  # First, try to get duration from API
+  # Get duration from API
   DURATION=$(getJsonValue "duration" "$RUN_BODY")
   DURATION=$(echo "$DURATION" | tr -dc '0-9')
   DURATION=${DURATION:-0}
+  DURATION_SEC=$((DURATION / 1000))
   
-  if [ $DURATION -gt 0 ]; then
-    DURATION_SEC=$((DURATION / 1000))
-  else
-    DURATION_SEC=0
-  fi
-  
-  # Now try JUnit first (since API doesn't have test counts)
+  # Download JUnit report
   REPORT_FILE="./junit-report-testplan-${TEST_PLAN_ID}.xml"
-  
-  # Download JUnit report first
   echo "   📥 Downloading JUnit report..."
   curl --silent -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
     -H "Accept: application/xml" \
@@ -213,10 +196,9 @@ extractTestCaseStatistics() {
   
   # Extract from JUnit
   if extractFromJUnit "$REPORT_FILE"; then
-    echo "   ✓ Extracted statistics from JUnit report"
+    echo "   ✓ Statistics extracted from JUnit XML"
   else
-    # Fallback to API (though it seems to return 0)
-    echo "   ⚠️  JUnit extraction failed, trying API..."
+    echo "   ⚠️  Could not extract from JUnit, trying API..."
     PASSED_COUNT=$(getJsonValue "passedCount" "$RUN_BODY")
     FAILED_COUNT=$(getJsonValue "failedCount" "$RUN_BODY")
     TOTAL_COUNT=$(getJsonValue "totalCount" "$RUN_BODY")
@@ -232,25 +214,20 @@ extractTestCaseStatistics() {
   fi
   
   echo ""
-  echo "   📋 Results:"
-  echo "   ────────────────────────────────────────────────────"
-  echo "   Total Test Cases:    $TOTAL_COUNT"
-  echo "   ✅ Passed:           $PASSED_COUNT"
-  echo "   ❌ Failed:           $FAILED_COUNT"
-  echo "   ⏭️  Skipped:          $SKIPPED_COUNT"
-  echo "   ⏱️  Duration:         ${DURATION_SEC}s"
+  echo "   Total:    $TOTAL_COUNT test cases"
+  echo "   ✅ Passed: $PASSED_COUNT"
+  echo "   ❌ Failed: $FAILED_COUNT"
+  echo "   ⏭️  Skipped: $SKIPPED_COUNT"
+  echo "   ⏱️  Time:   ${DURATION_SEC}s"
   
-  # Calculate pass rate
   if [ $TOTAL_COUNT -gt 0 ]; then
     PASS_RATE=$((PASSED_COUNT * 100 / TOTAL_COUNT))
-    echo "   📈 Pass Rate:        ${PASS_RATE}%"
-  else
-    echo "   📈 Pass Rate:        N/A"
+    echo "   📈 Rate:   ${PASS_RATE}%"
   fi
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   
-  # Update global totals
+  # Update totals
   TOTAL_TEST_CASES=$((TOTAL_TEST_CASES + TOTAL_COUNT))
   TOTAL_PASSED_CASES=$((TOTAL_PASSED_CASES + PASSED_COUNT))
   TOTAL_FAILED_CASES=$((TOTAL_FAILED_CASES + FAILED_COUNT))
@@ -261,7 +238,7 @@ extractTestCaseStatistics() {
 saveJsonResponse(){
   JSON_FILE="./testsigma-response-testplan-${TEST_PLAN_ID}.json"
   echo "$RUN_BODY" > $JSON_FILE
-  echo "💾 Saved JSON response: $JSON_FILE"
+  echo "💾 Saved: $JSON_FILE"
 }
 
 #******************************************************
@@ -271,12 +248,11 @@ saveJsonResponse(){
 START_TIME=$(date +%s)
 
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║  Testsigma Multi Test Plan Execution (JUnit-First)            ║"
+echo "║       Testsigma Multi Test Plan Execution                     ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "Build Number: $BUILD_NO"
-echo "Runtime Data: $RUNTIME_DATA_INPUT"
-echo "Test Plans: $TESTSIGMA_TEST_PLAN_IDS"
+echo "Build: $BUILD_NO"
+echo "Plans: $TESTSIGMA_TEST_PLAN_IDS"
 echo ""
 
 FINAL_EXIT_CODE=0
@@ -288,12 +264,12 @@ do
   PLAN_INDEX=$((PLAN_INDEX + 1))
   
   echo ""
-  echo "╔════════════════════════════════════════════════════════════════╗"
-  printf "║  Test Plan %d/%d - ID: %-42s║\n" $PLAN_INDEX $TOTAL_TEST_PLANS $TEST_PLAN_ID
-  echo "╚════════════════════════════════════════════════════════════════╝"
+  echo "════════════════════════════════════════════════════════════════"
+  echo "Test Plan $PLAN_INDEX/$TOTAL_TEST_PLANS - ID: $TEST_PLAN_ID"
+  echo "════════════════════════════════════════════════════════════════"
 
   populateJsonPayload
-  echo "🚀 Triggering test plan execution..."
+  echo "🚀 Triggering execution..."
   
   HTTP_RESPONSE=$(curl -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
     -H "Accept: application/json" \
@@ -303,22 +279,17 @@ do
 
   RUN_ID=$(getJsonValue "id" "$HTTP_RESPONSE")
   HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
-  HTTP_BODY=$(echo $HTTP_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
 
-  if [ ! $HTTP_STATUS -eq 200 ]; then
-    echo "❌ Failed to start Test Plan execution"
-    echo "   HTTP Status: $HTTP_STATUS"
-    echo "   Error: $HTTP_BODY"
-    PLAN_RESULTS[$PLAN_INDEX]="Plan $TEST_PLAN_ID | ❌ TRIGGER FAILED | 0/0/0 | HTTP $HTTP_STATUS"
+  if [ "$HTTP_STATUS" != "200" ]; then
+    echo "❌ Failed to start (HTTP $HTTP_STATUS)"
+    PLAN_RESULTS[$PLAN_INDEX]="Plan $TEST_PLAN_ID | ❌ FAILED | 0/0/0 | Trigger Failed"
     TOTAL_FAILED_PLANS=$((TOTAL_FAILED_PLANS + 1))
     FINAL_EXIT_CODE=1
     continue
   fi
 
-  echo "✅ Execution started successfully"
-  echo "   Run ID: $RUN_ID"
-  echo ""
-  echo "⏳ Waiting for execution to complete..."
+  echo "✅ Started - Run ID: $RUN_ID"
+  echo "⏳ Waiting for completion..."
   echo ""
 
   checkTestPlanRunStatus
@@ -326,20 +297,20 @@ do
   echo ""
   echo "✓ Execution completed"
 
-  # Extract statistics (downloads JUnit and extracts from it)
+  # Extract statistics
   extractTestCaseStatistics
   
-  # Save JSON response
+  # Save JSON
   saveJsonResponse
 
-  # Determine plan result based on ACTUAL test results
+  # Determine result
   if [ $FAILED_COUNT -eq 0 ] && [ $TOTAL_COUNT -gt 0 ]; then
-    echo "✅ Test Plan $TEST_PLAN_ID Result: PASSED"
-    PLAN_RESULTS[$PLAN_INDEX]="Plan $TEST_PLAN_ID | ✅ PASSED | ${PASSED_COUNT}/${FAILED_COUNT}/${SKIPPED_COUNT} | ${DURATION_SEC}s"
+    echo "✅ PASSED"
+    PLAN_RESULTS[$PLAN_INDEX]="Plan $TEST_PLAN_ID | ✅ PASSED | P:$PASSED_COUNT F:$FAILED_COUNT S:$SKIPPED_COUNT | ${DURATION_SEC}s"
     TOTAL_PASSED_PLANS=$((TOTAL_PASSED_PLANS + 1))
   else
-    echo "❌ Test Plan $TEST_PLAN_ID Result: FAILED"
-    PLAN_RESULTS[$PLAN_INDEX]="Plan $TEST_PLAN_ID | ❌ FAILED | ${PASSED_COUNT}/${FAILED_COUNT}/${SKIPPED_COUNT} | ${DURATION_SEC}s"
+    echo "❌ FAILED"
+    PLAN_RESULTS[$PLAN_INDEX]="Plan $TEST_PLAN_ID | ❌ FAILED | P:$PASSED_COUNT F:$FAILED_COUNT S:$SKIPPED_COUNT | ${DURATION_SEC}s"
     TOTAL_FAILED_PLANS=$((TOTAL_FAILED_PLANS + 1))
     FINAL_EXIT_CODE=1
   fi
@@ -348,15 +319,15 @@ done
 END_TIME=$(date +%s)
 TOTAL_TIME=$((END_TIME - START_TIME))
 
-# Calculate totals
-TOTAL_PLAN_PASS_RATE=0
+# Calculate rates
+PLAN_PASS_RATE=0
 if [ $TOTAL_TEST_PLANS -gt 0 ]; then
-  TOTAL_PLAN_PASS_RATE=$((TOTAL_PASSED_PLANS * 100 / TOTAL_TEST_PLANS))
+  PLAN_PASS_RATE=$((TOTAL_PASSED_PLANS * 100 / TOTAL_TEST_PLANS))
 fi
 
-TOTAL_CASE_PASS_RATE=0
+CASE_PASS_RATE=0
 if [ $TOTAL_TEST_CASES -gt 0 ]; then
-  TOTAL_CASE_PASS_RATE=$((TOTAL_PASSED_CASES * 100 / TOTAL_TEST_CASES))
+  CASE_PASS_RATE=$((TOTAL_PASSED_CASES * 100 / TOTAL_TEST_CASES))
 fi
 
 #******************************************************
@@ -369,74 +340,50 @@ echo "╔═══════════════════════�
 echo "║                    EXECUTION SUMMARY                           ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "┌────────────────────────────────────────────────────────────────┐"
-echo "│ TEST PLAN RESULTS                                              │"
-echo "├────────────────────────────────────────────────────────────────┤"
+echo "TEST PLAN RESULTS:"
+echo "──────────────────────────────────────────────────────────────────"
 
-for i in "${!PLAN_RESULTS[@]}"; do
+for i in $(seq 1 $PLAN_INDEX); do
   if [ -n "${PLAN_RESULTS[$i]}" ]; then
-    printf "│ %-62s │\n" "${PLAN_RESULTS[$i]}"
+    echo "${PLAN_RESULTS[$i]}"
   fi
 done
 
-echo "└────────────────────────────────────────────────────────────────┘"
 echo ""
-echo "┌────────────────────────────────────────────────────────────────┐"
-echo "│ TEST PLAN STATISTICS                                           │"
-echo "├────────────────────────────────────────────────────────────────┤"
-printf "│ %-30s %-33s │\n" "Total Test Plans:" "$TOTAL_TEST_PLANS"
-printf "│ %-30s %-33s │\n" "✅ Passed Plans:" "$TOTAL_PASSED_PLANS"
-printf "│ %-30s %-33s │\n" "❌ Failed Plans:" "$TOTAL_FAILED_PLANS"
-printf "│ %-30s %-33s │\n" "📊 Plan Pass Rate:" "${TOTAL_PLAN_PASS_RATE}%"
-echo "└────────────────────────────────────────────────────────────────┘"
-echo ""
-echo "┌────────────────────────────────────────────────────────────────┐"
-echo "│ TEST CASE STATISTICS (ACROSS ALL PLANS)                       │"
-echo "├────────────────────────────────────────────────────────────────┤"
-printf "│ %-30s %-33s │\n" "Total Test Cases:" "$TOTAL_TEST_CASES"
-printf "│ %-30s %-33s │\n" "✅ Passed Cases:" "$TOTAL_PASSED_CASES"
-printf "│ %-30s %-33s │\n" "❌ Failed Cases:" "$TOTAL_FAILED_CASES"
-printf "│ %-30s %-33s │\n" "⏭️  Skipped Cases:" "$TOTAL_SKIPPED_CASES"
-printf "│ %-30s %-33s │\n" "📈 Case Pass Rate:" "${TOTAL_CASE_PASS_RATE}%"
-echo "└────────────────────────────────────────────────────────────────┘"
-echo ""
-echo "┌────────────────────────────────────────────────────────────────┐"
-echo "│ EXECUTION TIME                                                 │"
-echo "├────────────────────────────────────────────────────────────────┤"
-printf "│ %-30s %-33s │\n" "Total Execution Time:" "${TOTAL_EXECUTION_TIME}s"
-printf "│ %-30s %-33s │\n" "Total Wall Time:" "${TOTAL_TIME}s"
-echo "└────────────────────────────────────────────────────────────────┘"
-echo ""
-echo "┌────────────────────────────────────────────────────────────────┐"
-echo "│ REPORTS GENERATED                                              │"
-echo "├────────────────────────────────────────────────────────────────┤"
+echo "TEST PLAN STATISTICS:"
+echo "──────────────────────────────────────────────────────────────────"
+echo "Total Plans:     $TOTAL_TEST_PLANS"
+echo "✅ Passed:       $TOTAL_PASSED_PLANS"
+echo "❌ Failed:       $TOTAL_FAILED_PLANS"
+echo "📊 Pass Rate:    ${PLAN_PASS_RATE}%"
 
-for TEST_PLAN_ID in $TESTSIGMA_TEST_PLAN_IDS
-do
-  if [ -f "./junit-report-testplan-${TEST_PLAN_ID}.xml" ]; then
-    printf "│ 📄 %-61s │\n" "junit-report-testplan-${TEST_PLAN_ID}.xml"
-  fi
-  if [ -f "./testsigma-response-testplan-${TEST_PLAN_ID}.json" ]; then
-    printf "│ 📄 %-61s │\n" "testsigma-response-testplan-${TEST_PLAN_ID}.json"
-  fi
-done
-
-echo "└────────────────────────────────────────────────────────────────┘"
 echo ""
+echo "TEST CASE STATISTICS (ALL PLANS):"
+echo "──────────────────────────────────────────────────────────────────"
+echo "Total Cases:     $TOTAL_TEST_CASES"
+echo "✅ Passed:       $TOTAL_PASSED_CASES"
+echo "❌ Failed:       $TOTAL_FAILED_CASES"
+echo "⏭️  Skipped:      $TOTAL_SKIPPED_CASES"
+echo "📈 Pass Rate:    ${CASE_PASS_RATE}%"
 
-# Final result
+echo ""
+echo "EXECUTION TIME:"
+echo "──────────────────────────────────────────────────────────────────"
+echo "Test Time:       ${TOTAL_EXECUTION_TIME}s"
+echo "Wall Time:       ${TOTAL_TIME}s"
+
+echo ""
+echo "══════════════════════════════════════════════════════════════════"
+
 if [ $FINAL_EXIT_CODE -eq 0 ]; then
-  echo "╔════════════════════════════════════════════════════════════════╗"
-  echo "║  ✅ ALL TEST PLANS PASSED                                      ║"
-  echo "╚════════════════════════════════════════════════════════════════╝"
+  echo "✅ ALL TEST PLANS PASSED"
 else
-  echo "╔════════════════════════════════════════════════════════════════╗"
-  echo "║  ❌ ONE OR MORE TEST PLANS FAILED                              ║"
-  echo "╚════════════════════════════════════════════════════════════════╝"
+  echo "❌ ONE OR MORE TEST PLANS FAILED"
 fi
 
+echo "══════════════════════════════════════════════════════════════════"
 echo ""
-echo "Build completed at: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "Completed: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
 exit $FINAL_EXIT_CODE
