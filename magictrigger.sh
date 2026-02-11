@@ -1,207 +1,270 @@
 #!/bin/bash
 #**********************************************************************
-# Multi Testsigma Test Plan Trigger Script
-# - Triggers multiple test plans one by one
-# - Waits until each completes
-# - Downloads separate JUnit reports per plan
-# - Continues even if one fails
-# - Shows PASS/FAIL per test plan
-# - Final exit code = FAIL if any plan failed
-#**********************************************************************
-
+#
+# TESTSIGMA_API_KEY -> API key generated under Testsigma App >> Configuration >> API Keys
+#
+# TESTSIGMA_TEST_PLAN_ID -> Testsigma Testplan ID.
+# You can get this from Testsigma App >> Test Plans >> <TEST_PLAN_NAME> >> CI/CD Integration
+#
+# MAX_WAIT_TIME_FOR_SCRIPT_TO_EXIT -> Maximum time in minutes the script will wait for TEST Plan execution to complete. 
+# The sctript will exit if the Maximum time is exceeded. However, the Test Plan will continue to run. 
+# You can check test results by logging to Testsigma.
+#
+# JUNIT_REPORT_FILE_PATH -> File name with directory path to save the report.
+# For Example, <DIR_PATH>/report.xml, ./report.xml
+# 
+# RUNTIME_DATA_INPUT -> Specify runtime parameters/variables to be used in the tests in comma-separated manner
+# For example, "url=https://the-internet.herokuapp.com/login,variable1=value1"
+#
+# BUILD_NO -> Specify Build number if you want to track the builds in Testsigma. It will show up in the Test Results page
+# For example, we are using $(date +"%Y%m%d%H%M") to use current data and time as build number.
+#
 #********START USER_INPUTS*********
-TESTSIGMA_API_KEY="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiIyYzI3NWM0OC1jMzcwLTQ0YjgtOGYxYS05ZmZmYzY0MTI4NmUiLCJkb21haW4iOiJldmllLmNvbS5hdSIsInRlbmFudElkIjo2NjY4OCwiaXNJZGxlVGltZW91dENvbmZpZ3VyZWQiOmZhbHNlfQ.4kzfASEr0Bb4_VQTxTdy41f3cKq14dwwRdJZyS9vQUj9SpMhcHv_D4sE3malkop6RSzDDuS7kZ0SAPMUOCtJYw"
-
-# ✅ Multiple Test Plan IDs
-TESTSIGMA_TEST_PLAN_IDS="3189 3190"
-
-# Runtime data (optional)
+TESTSIGMA_API_KEY=eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiIyYzI3NWM0OC1jMzcwLTQ0YjgtOGYxYS05ZmZmYzY0MTI4NmUiLCJkb21haW4iOiJldmllLmNvbS5hdSIsInRlbmFudElkIjo2NjY4OCwiaXNJZGxlVGltZW91dENvbmZpZ3VyZWQiOmZhbHNlfQ.4kzfASEr0Bb4_VQTxTdy41f3cKq14dwwRdJZyS9vQUj9SpMhcHv_D4sE3malkop6RSzDDuS7kZ0SAPMUOCtJYw
+TESTSIGMA_TEST_PLAN_ID=3190
+MAX_WAIT_TIME_FOR_SCRIPT_TO_EXIT=1
+JUNIT_REPORT_FILE_PATH=./junit-report.xml
 RUNTIME_DATA_INPUT="url=https://the-internet.herokuapp.com/login,test=1221"
-
-# Build number
 BUILD_NO=$(date +"%Y%m%d%H%M")
-
-# Poll wait time
-SLEEP_TIME=10
 #********END USER_INPUTS***********
-
-
+ 
 #********GLOBAL variables**********
-TESTSIGMA_TEST_PLAN_REST_URL="https://app.testsigma.com/api/v1/execution_results"
-TESTSIGMA_JUNIT_REPORT_URL="https://app.testsigma.com/api/v1/reports/junit"
+POLL_COUNT=30
+SLEEP_TIME=$(((MAX_WAIT_TIME_FOR_SCRIPT_TO_EXIT*60)/$POLL_COUNT))
+JSON_REPORT_FILE_PATH=./testsigma.json
+TESTSIGMA_TEST_PLAN_REST_URL=https://app.testsigma.com/api/v1/execution_results
+TESTSIGMA_JUNIT_REPORT_URL=https://app.testsigma.com/api/v1/reports/junit
+MAX_WAITTIME_EXCEEDED_ERRORMSG="Given Maximum Wait Time of $MAX_WAIT_TIME_FOR_SCRIPT_TO_EXIT minutes exceeded waiting for the Test Run completion. 
+Please log-in to Testsigma to check Test Plan run results. You can visit the URL specified in \"app_url\" JSON parameter in the response to go to the Test Plan results page directly. 
+For example, \"app_url\":\"https://dev.testsigma.com/#/projects/31/applications/53/version/72/report/executions/197/runs/819/environments\""
 #**********************************
+ 
+#Read arguments
+for i in "$@"
+  do
+  case $i in
+    -k=*|--apikey=*)
+    TESTSIGMA_API_KEY="${i#*=}"
+    shift
+    ;;
+    -i=*|--testplanid=*)
+    TESTSIGMA_TEST_PLAN_ID="${i#*=}"
+    shift
+    ;;
+    -t=*|--maxtimeinmins=*)
+    MAX_WAIT_TIME_FOR_SCRIPT_TO_EXIT="${i#*=}"
+    shift
+    ;;
+    -r=*|--reportfilepath=*)
+    JUNIT_REPORT_FILE_PATH="${i#*=}"
+    shift
+    ;;
+    -d=*|--runtimedata=*)
+    RUNTIME_DATA_INPUT="${i#*=}"
+    shift
+    ;;
+    -b=*|--buildno=*)
+    BUILD_NO="${i#*=}"
+    shift
+    ;;
+   -h|--help)
+    echo "Arguments: "
+    echo " [-k | --apikey] = <TESTSIGMA_API_KEY>"
+    echo " [-i | --testplanid] = <TESTSIGMA_TEST_PLAN_ID>"
+    echo " [-t | --maxtimeinmins] = <MAX_WAIT_TIME_IN_MINS>"
+    echo " [-r | --reportfilepath] = <JUNIT_REPORT_FILE_PATH>"
+    echo " [-d | --runtimedata] = <OPTIONAL COMMA SEPARATED KEY VALUE PAIRS>"
+    echo " [-b | --buildno] = <BUILD_NO_IF_ANY>"
+ 
+    printf "Example:\n bash testsigma_cicd.sh --apikey=YSWfniLEWYK7aLrS-FhYUD1kO0MQu9renQ0p-oyCXMlQ --testplanid=230 --maxtimeinmins=180 --reportfilepath=./junit-report.xml \n\n"
+    printf "With Runtimedata parameters:\n bash testsigma_cicd.sh --apikey=YSWfniLEWYK7aLrS-FhYUD1kO0MQu9renQ0p-oyCXMlQ --testplanid=230 --maxtimeinmins=180
+    --reportfilepath=./junit-report.xml --runtimedata=\"buildurl=http://test1.url.com,data1=testdata\" --buildno=773\n\n"
+ 
+    shift
+    exit 1
+    ;;
+  esac
+done
+ 
+get_status(){
+  # Old method
+  # RUN_RESPONSE=$(curl -u $TESTSIGMA_USER_NAME:$TESTSIGMA_PASSWORD --silent --write-out "HTTPSTATUS:%{http_code}" -X GET $TESTSIGMA_TEST_PLAN_RUN_URL/$HTTP_BODY/status)
+ 
+  RUN_RESPONSE=$(curl -H "Authorization:Bearer $TESTSIGMA_API_KEY"\
+    --silent --write-out "HTTPSTATUS:%{http_code}" \
+    -X GET $TESTSIGMA_TEST_PLAN_REST_URL/$RUN_ID)
+  
+  # extract the body
+  RUN_BODY=$(echo $RUN_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
+  # extract the response status
+  RUN_STATUS=$(echo $RUN_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+  echo "Test Plan Result Response: $RUN_BODY"
+  # extract exec status
+  EXECUTION_STATUS=$(echo $RUN_BODY | getJsonValue status)
 
-getJsonValue() {
+}
+ 
+function checkTestPlanRunStatus(){
+  IS_TEST_RUN_COMPLETED=0
+  for ((i=0;i<=POLL_COUNT;i++))
+  do
+    get_status
+    echo " Exceution Status:: $EXECUTION_STATUS "
+    if [[ $EXECUTION_STATUS =~ "STATUS_IN_PROGRESS" ]]; then
+      echo "Poll #$(($i+1)) - Test Execution in progress... Wait for $SLEEP_TIME seconds before next poll.."
+      sleep $SLEEP_TIME
+    elif [[ $EXECUTION_STATUS =~ "STATUS_CREATED" ]]; then
+      echo "Poll #$(($i+1)) - Test Execution/Re-run Created... Wait for $SLEEP_TIME seconds before next poll.."
+      sleep $SLEEP_TIME  
+    elif [[ $EXECUTION_STATUS =~ "STATUS_COMPLETED" ]]; then
+      IS_TEST_RUN_COMPLETED=1
+      echo "Poll #$(($i+1)) - Tests Execution completed..."
+      TOTALRUNSECONDS=$(($(($i+1))*$SLEEP_TIME))
+      echo "Total script run time: $(convertsecs $TOTALRUNSECONDS)"
+      break
+    else
+      echo "Unexpected Execution status. Please check run results for more details."
+    fi
+  done
+}
+ 
+function saveFinalResponseToJSONFile(){
+  if [ $IS_TEST_RUN_COMPLETED -eq 0 ]
+    then
+      echo "$MAX_WAITTIME_EXCEEDED_ERRORMSG"
+  fi
+  
+  echo "$RUN_BODY" >> $JSON_REPORT_FILE_PATH
+  echo "Saved response to JSON Reports file - $JSON_REPORT_FILE_PATH"
+}
+ 
+function saveFinalResponseToJUnitFile(){
+  if [ $IS_TEST_RUN_COMPLETED -eq 0 ]
+    then
+      echo "$MAX_WAITTIME_EXCEEDED_ERRORMSG"
+      exit 1
+  fi
+ 
+  echo ""
+  echo "Downloading the Junit report..."
+ 
+  curl --progress-bar -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
+    -H "Accept: application/xml" \
+    -H "content-type:application/json" \
+    -X GET $TESTSIGMA_JUNIT_REPORT_URL/$RUN_ID --output $JUNIT_REPORT_FILE_PATH
+ 
+  echo "JUNIT Reports file - $JUNIT_REPORT_FILE_PATH"
+}
+ 
+function getJsonValue() {
   json_key=$1
   awk -F"[,:}]" '{for(i=1;i<=NF;i++){if($i~/\042'$json_key'\042/){print $(i+1)}}}' | tr -d '"'
 }
-
-populateRuntimeData() {
-  if [ -z "$RUNTIME_DATA_INPUT" ]; then
-    RUN_TIME_DATA=""
-    return
-  fi
-
+ 
+function populateRuntimeData() {
   IFS=',' read -r -a VARIABLES <<< "$RUNTIME_DATA_INPUT"
   RUN_TIME_DATA='"runtimeData":{'
   DATA_VALUES=
-
   for element in "${VARIABLES[@]}"
   do
     DATA_VALUES=$DATA_VALUES","
     IFS='=' read -r -a VARIABLE_VALUES <<< "$element"
     DATA_VALUES="$DATA_VALUES"'"'"${VARIABLE_VALUES[0]}"'":"'"${VARIABLE_VALUES[1]}"'"'
   done
-
   DATA_VALUES="${DATA_VALUES:1}"
   RUN_TIME_DATA=$RUN_TIME_DATA$DATA_VALUES"}"
 }
-
-populateBuildNo(){
-  if [ -z "$BUILD_NO" ]; then
-    BUILD_DATA=""
+ 
+function populateBuildNo(){
+  if [ -z "$BUILD_NO" ]
+    then
+      echo ""
   else
-    BUILD_DATA='"buildNo":"'$BUILD_NO'"'
+    BUILD_DATA='"buildNo":'$BUILD_NO
   fi
 }
-
-populateJsonPayload(){
-  JSON_DATA='{"executionId":'$TEST_PLAN_ID
+ 
+function populateJsonPayload(){
+  JSON_DATA='{"executionId":'$TESTSIGMA_TEST_PLAN_ID
   populateRuntimeData
   populateBuildNo
-
-  if [ -z "$BUILD_DATA" ] && [ -z "$RUN_TIME_DATA" ]; then
-    JSON_DATA=$JSON_DATA"}"
-  elif [ -z "$BUILD_DATA" ]; then
-    JSON_DATA=$JSON_DATA,$RUN_TIME_DATA"}"
-  elif [ -z "$RUN_TIME_DATA" ]; then
-    JSON_DATA=$JSON_DATA,$BUILD_DATA"}"
+  if [ -z "$BUILD_DATA" ];then
+      JSON_DATA=$JSON_DATA,$RUN_TIME_DATA"}"
+  elif [ -z "$RUN_TIME_DATA" ];then
+      JSON_DATA=$JSON_DATA,$BUILD_DATA"}"
+  elif [ -z "$BUILD_DATA" ] && [ -z "$RUN_TIME_DATA" ];then
+      JSON_DATA=$JSON_DATA"}"
   else
-    JSON_DATA=$JSON_DATA,$RUN_TIME_DATA,$BUILD_DATA"}"
+     JSON_DATA=$JSON_DATA,$RUN_TIME_DATA,$BUILD_DATA"}"
   fi
+  echo "InputData="$JSON_DATA
 }
-
-get_status(){
-  RUN_RESPONSE=$(curl -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
-    --silent --write-out "HTTPSTATUS:%{http_code}" \
-    -X GET $TESTSIGMA_TEST_PLAN_REST_URL/$RUN_ID)
-
-  RUN_BODY=$(echo $RUN_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
-  EXECUTION_STATUS=$(echo $RUN_BODY | getJsonValue status)
-  EXECUTION_RESULT=$(echo $RUN_BODY | getJsonValue result)
+ 
+function convertsecs(){
+  ((h=${1}/3600))
+  ((m=(${1}%3600)/60))
+  ((s=${1}%60))
+  printf "%02d hours %02d minutes %02d seconds" $h $m $s
 }
-
-checkTestPlanRunStatus(){
-  while true
-  do
-    get_status
-    echo "Execution Status:: $EXECUTION_STATUS"
-
-    if [[ $EXECUTION_STATUS =~ "STATUS_IN_PROGRESS" ]]; then
-      sleep $SLEEP_TIME
-
-    elif [[ $EXECUTION_STATUS =~ "STATUS_CREATED" ]]; then
-      sleep $SLEEP_TIME
-
-    elif [[ $EXECUTION_STATUS =~ "STATUS_COMPLETED" ]]; then
-      break
-
-    else
-      echo "Unexpected Execution status: $EXECUTION_STATUS"
-      sleep $SLEEP_TIME
-    fi
-  done
+ 
+function setExitCode(){
+  RESULT=$(echo $RUN_BODY | getJsonValue result)
+  APPURL=$(echo $RUN_BODY | getJsonValue result)
+  echo $RESULT
+  echo $([[ $RESULT =~ "SUCCESS" ]])
+  if [[ $RESULT =~ "SUCCESS" ]];then
+    EXITCODE=0
+  else
+    EXITCODE=1
+  fi
+  echo "exit Code:$EXITCODE"
 }
-
-saveJUnitReport(){
-  REPORT_FILE="./junit-report-testplan-${TEST_PLAN_ID}.xml"
-
-  curl --silent -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
-    -H "Accept: application/xml" \
-    -H "content-type:application/json" \
-    -X GET $TESTSIGMA_JUNIT_REPORT_URL/$RUN_ID \
-    --output $REPORT_FILE
-
-  echo "Saved JUnit report: $REPORT_FILE"
-}
-
-saveJsonResponse(){
-  JSON_FILE="./testsigma-response-testplan-${TEST_PLAN_ID}.json"
-  echo "$RUN_BODY" > $JSON_FILE
-  echo "Saved JSON response: $JSON_FILE"
-}
-
 #******************************************************
-
-echo "************ Testsigma: Start executing multiple Test Plans ************"
-
-FINAL_EXIT_CODE=0
-
-# Store results
-SUMMARY_RESULTS=""
-
-for TEST_PLAN_ID in $TESTSIGMA_TEST_PLAN_IDS
-do
-  echo ""
-  echo "========================================================"
-  echo "Triggering Test Plan ID: $TEST_PLAN_ID"
-  echo "========================================================"
-
-  populateJsonPayload
-
-  echo "DEBUG: JSON Payload: $JSON_DATA"
-  echo "DEBUG: API URL: $TESTSIGMA_TEST_PLAN_REST_URL"
-
-  HTTP_RESPONSE=$(curl -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
-    -H "Accept: application/json" \
-    -H "content-type:application/json" \
-    --silent --write-out "HTTPSTATUS:%{http_code}" \
-    -d "$JSON_DATA" -X POST $TESTSIGMA_TEST_PLAN_REST_URL )
-
-  RUN_ID=$(echo $HTTP_RESPONSE | getJsonValue id)
-  HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
-  HTTP_BODY=$(echo $HTTP_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
-
-  echo "DEBUG: HTTP Status: $HTTP_STATUS"
-  echo "DEBUG: Response Body: $HTTP_BODY"
-
-  if [ ! $HTTP_STATUS -eq 200 ]; then
-    echo "❌ Failed to start Test Plan execution for Test Plan ID: $TEST_PLAN_ID"
-    echo "Error Response: $HTTP_BODY"
-    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => FAIL (Trigger Failed - HTTP $HTTP_STATUS)"
-    FINAL_EXIT_CODE=1
-    continue
-  fi
-
-  echo "✅ Run ID: $RUN_ID"
-  echo "Waiting until execution completes..."
-
-  checkTestPlanRunStatus
-
-  saveJUnitReport
-  saveJsonResponse
-
-  # PASS/FAIL based on result
-  if [[ $EXECUTION_RESULT =~ "SUCCESS" ]]; then
-    echo "✅ Test Plan $TEST_PLAN_ID Result: PASS"
-    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => PASS"
-  else
-    echo "❌ Test Plan $TEST_PLAN_ID Result: FAIL"
-    SUMMARY_RESULTS="$SUMMARY_RESULTS\nTest Plan $TEST_PLAN_ID => FAIL"
-    FINAL_EXIT_CODE=1
-  fi
-
-done
-
-echo ""
-echo "==================== FINAL SUMMARY ===================="
-echo -e "$SUMMARY_RESULTS"
-echo "======================================================="
-
-if [ $FINAL_EXIT_CODE -eq 0 ]; then
-  echo "✅ ALL Test Plans Passed"
+ 
+echo "************ Testsigma: Start executing automated tests ************"
+ 
+populateJsonPayload
+ 
+# store the whole response with the status at the end
+HTTP_RESPONSE=$(curl -H "Authorization:Bearer $TESTSIGMA_API_KEY" \
+  -H "Accept: application/json" \
+  -H "content-type:application/json" \
+  --silent --write-out "HTTPSTATUS:%{http_code}" \
+  -d $JSON_DATA -X POST $TESTSIGMA_TEST_PLAN_REST_URL )
+ 
+# extract the body from response
+HTTP_BODY=$(echo $HTTP_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
+ 
+# extract run id from response
+RUN_ID=$(echo $HTTP_RESPONSE | getJsonValue id)
+ 
+# extract the status code from response
+HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+ 
+# print the run ID or the error message
+NUMBERS_REGEX="^[0-9].*"
+if [[ $RUN_ID =~ $NUMBERS_REGEX ]]; then
+  echo "Run ID: $RUN_ID"
 else
-  echo "❌ One or more Test Plans Failed"
+  echo "$RUN_ID"
 fi
-
-exit $FINAL_EXIT_CODE
+ 
+EXITCODE=0
+# example using the status
+if [ ! $HTTP_STATUS -eq 200  ]; then
+  echo "Failed to start Test Plan execution!"
+  echo "$HTTP_RESPONSE"
+  EXITCODE=1
+  #Exit with a failure.
+else
+  echo "Number of maximum polls to be done: $POLL_COUNT"
+  checkTestPlanRunStatus
+  saveFinalResponseToJUnitFile
+  saveFinalResponseToJSONFile
+  setExitCode
+fi
+ 
+echo "************************************************"
+echo "Result JSON Response: $RUN_BODY"
+echo "************ Testsigma: Completed executing automated tests ************"
+exit $EXITCODE
