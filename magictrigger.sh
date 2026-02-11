@@ -1,10 +1,10 @@
 #!/bin/bash
 #**********************************************************************
-# Enhanced Multi Testsigma Test Plan Trigger Script - FIXED VERSION
-# - Better JSON parsing
-# - Handles null/empty values
-# - Debug mode to see raw responses
-# - Extracts statistics correctly
+# Enhanced Multi Testsigma Test Plan Trigger Script - FINAL VERSION
+# - Fixed calculation logic for passed test cases
+# - Better JUnit XML parsing
+# - Handles edge cases correctly
+# - Production ready
 #**********************************************************************
 
 #********START USER_INPUTS*********
@@ -45,7 +45,7 @@ TOTAL_EXECUTION_TIME=0
 declare -a PLAN_RESULTS
 #**********************************
 
-# Better JSON parsing function using multiple methods
+# Better JSON parsing function
 getJsonValue() {
   local json_key=$1
   local json_data=$2
@@ -157,7 +157,7 @@ extractTestCaseStatistics() {
     echo ""
   fi
   
-  # Extract statistics using improved parsing
+  # Extract statistics from API response
   PASSED_COUNT=$(getJsonValue "passedCount" "$RUN_BODY")
   FAILED_COUNT=$(getJsonValue "failedCount" "$RUN_BODY")
   ABORTED_COUNT=$(getJsonValue "abortedCount" "$RUN_BODY")
@@ -167,7 +167,7 @@ extractTestCaseStatistics() {
   TOTAL_COUNT=$(getJsonValue "totalCount" "$RUN_BODY")
   DURATION=$(getJsonValue "duration" "$RUN_BODY")
   
-  # Alternative field names (some Testsigma versions use different names)
+  # Alternative field names
   if [ -z "$PASSED_COUNT" ]; then
     PASSED_COUNT=$(getJsonValue "passed" "$RUN_BODY")
   fi
@@ -178,17 +178,7 @@ extractTestCaseStatistics() {
     TOTAL_COUNT=$(getJsonValue "total" "$RUN_BODY")
   fi
   
-  # Handle empty/null values - set to 0
-  PASSED_COUNT=${PASSED_COUNT:-0}
-  FAILED_COUNT=${FAILED_COUNT:-0}
-  ABORTED_COUNT=${ABORTED_COUNT:-0}
-  NOT_EXECUTED_COUNT=${NOT_EXECUTED_COUNT:-0}
-  QUEUED_COUNT=${QUEUED_COUNT:-0}
-  STOPPED_COUNT=${STOPPED_COUNT:-0}
-  TOTAL_COUNT=${TOTAL_COUNT:-0}
-  DURATION=${DURATION:-0}
-  
-  # Remove any non-numeric characters
+  # Clean and default to 0
   PASSED_COUNT=$(echo "$PASSED_COUNT" | tr -dc '0-9')
   FAILED_COUNT=$(echo "$FAILED_COUNT" | tr -dc '0-9')
   ABORTED_COUNT=$(echo "$ABORTED_COUNT" | tr -dc '0-9')
@@ -197,7 +187,6 @@ extractTestCaseStatistics() {
   TOTAL_COUNT=$(echo "$TOTAL_COUNT" | tr -dc '0-9')
   DURATION=$(echo "$DURATION" | tr -dc '0-9')
   
-  # Default to 0 if still empty
   PASSED_COUNT=${PASSED_COUNT:-0}
   FAILED_COUNT=${FAILED_COUNT:-0}
   ABORTED_COUNT=${ABORTED_COUNT:-0}
@@ -206,10 +195,10 @@ extractTestCaseStatistics() {
   TOTAL_COUNT=${TOTAL_COUNT:-0}
   DURATION=${DURATION:-0}
   
-  # Calculate skipped (aborted + not executed + stopped)
+  # Calculate skipped
   SKIPPED_COUNT=$((ABORTED_COUNT + NOT_EXECUTED_COUNT + STOPPED_COUNT))
   
-  # Convert duration from milliseconds to seconds
+  # Convert duration
   if [ $DURATION -gt 0 ]; then
     DURATION_SEC=$((DURATION / 1000))
   else
@@ -232,7 +221,7 @@ extractTestCaseStatistics() {
     echo "   📈 Pass Rate:        ${PASS_RATE}%"
   else
     PASS_RATE=0
-    echo "   📈 Pass Rate:        N/A (no test cases)"
+    echo "   📈 Pass Rate:        N/A (no test cases from API)"
   fi
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
@@ -256,51 +245,55 @@ saveJUnitReport(){
 
   echo "💾 Saved JUnit report: $REPORT_FILE"
   
-  # Try to extract statistics from JUnit report as fallback
+  # Try to extract statistics from JUnit report if API gave us 0
   if [ -f "$REPORT_FILE" ] && [ $TOTAL_COUNT -eq 0 ]; then
     echo "   Attempting to extract statistics from JUnit report..."
     
-    # Extract from JUnit XML
+    # Method 1: Try xmllint if available
     if command -v xmllint &> /dev/null; then
       JUNIT_TOTAL=$(xmllint --xpath "string(//testsuite/@tests)" "$REPORT_FILE" 2>/dev/null)
       JUNIT_FAILURES=$(xmllint --xpath "string(//testsuite/@failures)" "$REPORT_FILE" 2>/dev/null)
       JUNIT_ERRORS=$(xmllint --xpath "string(//testsuite/@errors)" "$REPORT_FILE" 2>/dev/null)
       JUNIT_SKIPPED=$(xmllint --xpath "string(//testsuite/@skipped)" "$REPORT_FILE" 2>/dev/null)
-      
-      if [ -n "$JUNIT_TOTAL" ] && [ "$JUNIT_TOTAL" != "0" ]; then
-        TOTAL_COUNT=$JUNIT_TOTAL
-        FAILED_COUNT=$((JUNIT_FAILURES + JUNIT_ERRORS))
-        SKIPPED_COUNT=${JUNIT_SKIPPED:-0}
-        PASSED_COUNT=$((TOTAL_COUNT - FAILED_COUNT - SKIPPED_COUNT))
-        
-        echo "   ✓ Extracted from JUnit: Total=$TOTAL_COUNT, Passed=$PASSED_COUNT, Failed=$FAILED_COUNT, Skipped=$SKIPPED_COUNT"
-        
-        # Update totals
-        TOTAL_TEST_CASES=$((TOTAL_TEST_CASES + TOTAL_COUNT))
-        TOTAL_PASSED_CASES=$((TOTAL_PASSED_CASES + PASSED_COUNT))
-        TOTAL_FAILED_CASES=$((TOTAL_FAILED_CASES + FAILED_COUNT))
-        TOTAL_SKIPPED_CASES=$((TOTAL_SKIPPED_CASES + SKIPPED_COUNT))
-      fi
     else
-      # Fallback: count testcase elements
+      # Method 2: Fallback to grep
       JUNIT_TOTAL=$(grep -c "<testcase" "$REPORT_FILE" 2>/dev/null || echo "0")
       JUNIT_FAILURES=$(grep -c "<failure" "$REPORT_FILE" 2>/dev/null || echo "0")
+      JUNIT_ERRORS=$(grep -c "<error" "$REPORT_FILE" 2>/dev/null || echo "0")
       JUNIT_SKIPPED=$(grep -c "<skipped" "$REPORT_FILE" 2>/dev/null || echo "0")
+    fi
+    
+    # Clean values
+    JUNIT_TOTAL=$(echo "$JUNIT_TOTAL" | tr -dc '0-9')
+    JUNIT_FAILURES=$(echo "$JUNIT_FAILURES" | tr -dc '0-9')
+    JUNIT_ERRORS=$(echo "$JUNIT_ERRORS" | tr -dc '0-9')
+    JUNIT_SKIPPED=$(echo "$JUNIT_SKIPPED" | tr -dc '0-9')
+    
+    JUNIT_TOTAL=${JUNIT_TOTAL:-0}
+    JUNIT_FAILURES=${JUNIT_FAILURES:-0}
+    JUNIT_ERRORS=${JUNIT_ERRORS:-0}
+    JUNIT_SKIPPED=${JUNIT_SKIPPED:-0}
+    
+    if [ "$JUNIT_TOTAL" != "0" ]; then
+      # Calculate properly: passed = total - failed - skipped
+      TOTAL_COUNT=$JUNIT_TOTAL
+      FAILED_COUNT=$((JUNIT_FAILURES + JUNIT_ERRORS))
+      SKIPPED_COUNT=$JUNIT_SKIPPED
       
-      if [ "$JUNIT_TOTAL" != "0" ]; then
-        TOTAL_COUNT=$JUNIT_TOTAL
-        FAILED_COUNT=$JUNIT_FAILURES
-        SKIPPED_COUNT=$JUNIT_SKIPPED
-        PASSED_COUNT=$((TOTAL_COUNT - FAILED_COUNT - SKIPPED_COUNT))
-        
-        echo "   ✓ Extracted from JUnit: Total=$TOTAL_COUNT, Passed=$PASSED_COUNT, Failed=$FAILED_COUNT, Skipped=$SKIPPED_COUNT"
-        
-        # Update totals
-        TOTAL_TEST_CASES=$((TOTAL_TEST_CASES + TOTAL_COUNT))
-        TOTAL_PASSED_CASES=$((TOTAL_PASSED_CASES + PASSED_COUNT))
-        TOTAL_FAILED_CASES=$((TOTAL_FAILED_CASES + FAILED_COUNT))
-        TOTAL_SKIPPED_CASES=$((TOTAL_SKIPPED_CASES + SKIPPED_COUNT))
+      # FIXED: Ensure passed count is never negative
+      PASSED_COUNT=$((TOTAL_COUNT - FAILED_COUNT - SKIPPED_COUNT))
+      if [ $PASSED_COUNT -lt 0 ]; then
+        PASSED_COUNT=0
       fi
+      
+      echo "   ✓ Extracted from JUnit Report:"
+      echo "      Total=$TOTAL_COUNT, Passed=$PASSED_COUNT, Failed=$FAILED_COUNT, Skipped=$SKIPPED_COUNT"
+      
+      # Update global totals
+      TOTAL_TEST_CASES=$((TOTAL_TEST_CASES + TOTAL_COUNT))
+      TOTAL_PASSED_CASES=$((TOTAL_PASSED_CASES + PASSED_COUNT))
+      TOTAL_FAILED_CASES=$((TOTAL_FAILED_CASES + FAILED_COUNT))
+      TOTAL_SKIPPED_CASES=$((TOTAL_SKIPPED_CASES + SKIPPED_COUNT))
     fi
   fi
 }
@@ -318,7 +311,7 @@ saveJsonResponse(){
 START_TIME=$(date +%s)
 
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║  Testsigma Multi Test Plan Execution (Enhanced v2)            ║"
+echo "║  Testsigma Multi Test Plan Execution (Final v3)               ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Build Number: $BUILD_NO"
@@ -346,7 +339,7 @@ do
   
   echo ""
   echo "╔════════════════════════════════════════════════════════════════╗"
-  echo "║  Test Plan ${PLAN_INDEX}/${#TESTSIGMA_TEST_PLAN_IDS} - ID: $TEST_PLAN_ID"
+  echo "║  Test Plan ${PLAN_INDEX}/${TOTAL_TEST_PLANS} - ID: $TEST_PLAN_ID"
   echo "╚════════════════════════════════════════════════════════════════╝"
 
   populateJsonPayload
@@ -388,12 +381,11 @@ do
 
   echo ""
   echo "✓ Execution completed"
-  echo ""
 
   # Extract and display statistics
   extractTestCaseStatistics
 
-  # Save reports
+  # Save reports (this may update counts from JUnit)
   saveJUnitReport
   saveJsonResponse
 
@@ -440,7 +432,7 @@ echo "├───────────────────────�
 
 for i in "${!PLAN_RESULTS[@]}"; do
   if [ -n "${PLAN_RESULTS[$i]}" ]; then
-    echo "│ ${PLAN_RESULTS[$i]}"
+    printf "│ %-62s │\n" "${PLAN_RESULTS[$i]}"
   fi
 done
 
@@ -449,27 +441,27 @@ echo ""
 echo "┌────────────────────────────────────────────────────────────────┐"
 echo "│ TEST PLAN STATISTICS                                           │"
 echo "├────────────────────────────────────────────────────────────────┤"
-printf "│ %-30s %-34s │\n" "Total Test Plans:" "$TOTAL_TEST_PLANS"
-printf "│ %-30s %-34s │\n" "✅ Passed Plans:" "$TOTAL_PASSED_PLANS"
-printf "│ %-30s %-34s │\n" "❌ Failed Plans:" "$TOTAL_FAILED_PLANS"
-printf "│ %-30s %-34s │\n" "📊 Plan Pass Rate:" "${TOTAL_PLAN_PASS_RATE}%"
+printf "│ %-30s %-33s │\n" "Total Test Plans:" "$TOTAL_TEST_PLANS"
+printf "│ %-30s %-33s │\n" "✅ Passed Plans:" "$TOTAL_PASSED_PLANS"
+printf "│ %-30s %-33s │\n" "❌ Failed Plans:" "$TOTAL_FAILED_PLANS"
+printf "│ %-30s %-33s │\n" "📊 Plan Pass Rate:" "${TOTAL_PLAN_PASS_RATE}%"
 echo "└────────────────────────────────────────────────────────────────┘"
 echo ""
 echo "┌────────────────────────────────────────────────────────────────┐"
 echo "│ TEST CASE STATISTICS (ACROSS ALL PLANS)                       │"
 echo "├────────────────────────────────────────────────────────────────┤"
-printf "│ %-30s %-34s │\n" "Total Test Cases:" "$TOTAL_TEST_CASES"
-printf "│ %-30s %-34s │\n" "✅ Passed Cases:" "$TOTAL_PASSED_CASES"
-printf "│ %-30s %-34s │\n" "❌ Failed Cases:" "$TOTAL_FAILED_CASES"
-printf "│ %-30s %-34s │\n" "⏭️  Skipped Cases:" "$TOTAL_SKIPPED_CASES"
-printf "│ %-30s %-34s │\n" "📈 Case Pass Rate:" "${TOTAL_CASE_PASS_RATE}%"
+printf "│ %-30s %-33s │\n" "Total Test Cases:" "$TOTAL_TEST_CASES"
+printf "│ %-30s %-33s │\n" "✅ Passed Cases:" "$TOTAL_PASSED_CASES"
+printf "│ %-30s %-33s │\n" "❌ Failed Cases:" "$TOTAL_FAILED_CASES"
+printf "│ %-30s %-33s │\n" "⏭️  Skipped Cases:" "$TOTAL_SKIPPED_CASES"
+printf "│ %-30s %-33s │\n" "📈 Case Pass Rate:" "${TOTAL_CASE_PASS_RATE}%"
 echo "└────────────────────────────────────────────────────────────────┘"
 echo ""
 echo "┌────────────────────────────────────────────────────────────────┐"
 echo "│ EXECUTION TIME                                                 │"
 echo "├────────────────────────────────────────────────────────────────┤"
-printf "│ %-30s %-34s │\n" "Total Execution Time:" "${TOTAL_EXECUTION_TIME}s"
-printf "│ %-30s %-34s │\n" "Total Wall Time:" "${TOTAL_TIME}s"
+printf "│ %-30s %-33s │\n" "Total Execution Time:" "${TOTAL_EXECUTION_TIME}s"
+printf "│ %-30s %-33s │\n" "Total Wall Time:" "${TOTAL_TIME}s"
 echo "└────────────────────────────────────────────────────────────────┘"
 echo ""
 echo "┌────────────────────────────────────────────────────────────────┐"
