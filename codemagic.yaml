@@ -6,3 +6,9 @@ workflows:
         script: |
           chmod +x ./magictrigger.sh
           ./magictrigger.sh
+
+    artifacts:
+      - junit-report-testplan-*.xml
+      - testsigma-response-testplan-*.json
+      - testsigma.json
+      - junit-report.xml
